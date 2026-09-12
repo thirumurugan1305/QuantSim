@@ -14,9 +14,9 @@ data and shows you the resulting portfolio value, trade log, and
 performance metrics.
 
 **This project is being built in phases.** This README will grow as each
-phase lands. Right now, **Phases 1–4** are complete.
+phase lands. Right now, **Phases 1–5** are complete.
 
-## Current status: Phase 4 — Strategy Engine
+## Current status: Phase 5 — Backtesting Engine
 
 What works today:
 - The app boots with `streamlit run app.py`.
@@ -26,31 +26,34 @@ What works today:
   if that fails.
 - `src/indicators/technical_indicators.py` provides reusable, tested SMA,
   EMA, RSI, and MACD calculations, previewed on the main page.
-- **New in Phase 4:** `src/strategies/` turns those indicators into
-  standardized BUY / SELL / HOLD signals:
-  - **Moving Average Crossover** — BUY when the fast SMA crosses above
-    the slow SMA, SELL when it crosses below.
-  - **RSI** — BUY while RSI is below the oversold threshold, SELL while
-    it's above the overbought threshold.
-  - **MACD** — BUY when the MACD line crosses above its signal line,
-    SELL when it crosses below.
-  The sidebar's **Strategy** dropdown is now live, with parameter inputs
-  specific to whichever strategy is selected, and a "Strategy Signals
-  Preview" section shows the resulting signal counts, a signal-events
-  table, and a simple signal-pulse chart.
-- This is **still a preview**: no trades are executed, no profit/loss is
-  calculated, and no portfolio is tracked yet. The "Run Backtest" button
-  stays disabled until Phase 5.
-- 67 automated tests total (`tests/test_indicators.py` +
-  `tests/test_strategies.py`), including a dedicated look-ahead-bias
-  check that verifies no strategy's past signals change when future data
-  is added.
+- `src/strategies/` turns those indicators into standardized BUY / SELL /
+  HOLD signals via Moving Average Crossover, RSI, and MACD strategies,
+  live-configurable in the sidebar with a "Strategy Signals Preview".
+- **New in Phase 5:** `src/backtesting/` actually simulates trades from
+  those signals. Click **Run Backtest** in the sidebar to:
+  - Walk through the loaded data bar-by-bar, chronologically.
+  - BUY spends all available cash on whole shares (no fractional
+    shares, no leverage); SELL closes the entire position. Long-only —
+    no short selling.
+  - Track cash, shares held, and total portfolio value at every bar.
+  - Record every **completed** trade (entry/exit price, date, P&L), and
+    separately report any position still **open** (unrealized) at the
+    end of the data, without force-closing it.
+  - Execution happens at the same bar's closing price the signal was
+    generated from — a documented simplifying assumption for this
+    version (see `src/backtesting/engine.py` for the full reasoning).
+  - This is still a **preview**: no Sharpe ratio, max drawdown, win
+    rate, or CAGR yet — those are Phase 6. Only raw results (final
+    value, trade count, equity curve, trade table) are shown.
+- 97 automated tests total across `tests/test_indicators.py`,
+  `tests/test_strategies.py`, and `tests/test_backtesting.py`, including
+  dedicated look-ahead-bias checks at both the strategy and backtest
+  layers.
 
-What is *not* built yet (coming in later phases): the backtesting engine
-(actually simulating trades and tracking a portfolio), performance
-metrics, the local SQLite database, and the full multi-tab UI. See
-`LEARNING_GUIDE.md` and `ARCHITECTURE.md` (added as those phases land)
-for details.
+What is *not* built yet (coming in later phases): performance metrics
+(Sharpe ratio, drawdown, win rate, CAGR), the local SQLite database, and
+the full multi-tab UI. See `LEARNING_GUIDE.md` and `ARCHITECTURE.md`
+(added as those phases land) for details.
 
 ## Requirements
 
@@ -105,13 +108,16 @@ QuantSim/
 │   │   ├── moving_average_strategy.py
 │   │   ├── rsi_strategy.py
 │   │   └── macd_strategy.py
-│   ├── backtesting/           # (Phase 5) backtest + portfolio accounting
+│   ├── backtesting/
+│   │   ├── models.py                # Trade, OpenPosition, PortfolioSnapshot, BacktestResult
+│   │   └── engine.py                # Phase 5: BacktestEngine, run_backtest()
 │   ├── analytics/             # (Phase 6) performance metrics
 │   ├── database/              # (Phase 7) SQLite persistence
 │   └── ui/                    # (Phase 8) chart helpers
 └── tests/
     ├── test_indicators.py     # Phase 3: 31 tests for SMA/EMA/RSI/MACD
-    └── test_strategies.py     # Phase 4: 36 tests for the strategy layer
+    ├── test_strategies.py     # Phase 4: 36 tests for the strategy layer
+    └── test_backtesting.py    # Phase 5: 30 tests for the backtesting engine
 ```
 
 ## Screenshots
@@ -126,9 +132,12 @@ _(placeholder — add a screenshot of the running app here once you have one)_
 - The bundled sample data represents one fixed, made-up price series; it
   does not adapt to the ticker you typed, only to the date range (where
   it overlaps).
-- No indicators, strategies, backtesting, metrics, or database
-  persistence exist yet.
-- The "Run Backtest" button remains disabled until Phase 5.
+- The backtesting engine is long-only, all-in/all-out, and executes at
+  the same bar's closing price — no short selling, partial position
+  sizing, or transaction costs by default (see `src/backtesting/engine.py`
+  for the full list of documented assumptions).
+- No performance metrics (Sharpe ratio, max drawdown, win rate, CAGR) or
+  database persistence exist yet.
 
 ## Disclaimer
 
@@ -138,7 +147,7 @@ advice.
 
 ## Future improvements
 
-See the phase list in this project's build plan — indicators, strategies,
-a full backtesting engine, performance analytics, local persistence, a
-richer multi-tab UI, and an optional/experimental ML module are all
-planned for later phases.
+See the phase list in this project's build plan — performance analytics
+(Phase 6), local SQLite persistence (Phase 7), a richer multi-tab UI
+(Phase 8), and an optional/experimental ML module are all planned for
+later phases.

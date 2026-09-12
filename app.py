@@ -36,9 +36,23 @@ Phase 4 scope (this file, today):
       Phase 5 (the backtesting engine). The "Run Backtest" button stays
       disabled.
 
-Still not built: the backtesting engine (Phase 5), performance metrics
-(Phase 6), the SQLite database (Phase 7), and the richer multi-tab UI
-(Phase 8).
+Phase 5 scope (this file, today):
+    - The sidebar's "Run Backtest" button is now REAL and enabled once a
+      valid strategy is configured. Clicking it runs
+      `src.backtesting.engine.run_backtest()` — the strategy generates
+      signals (Phase 4), and the engine simulates trades from them.
+    - A new "Backtest Results (Preview)" section shows final portfolio
+      value, completed-trade count, an equity curve, and a trade table.
+    - This is STILL a preview: no performance ratios (Sharpe ratio, max
+      drawdown, win rate, CAGR) are calculated yet — that's Phase 6.
+    - The last backtest result is kept in `st.session_state` so it stays
+      visible across unrelated reruns (e.g. moving a slider elsewhere),
+      but it's always labeled with exactly which ticker/dates/strategy
+      configuration it was actually run with, since that configuration
+      may no longer match the sidebar's current values.
+
+Still not built: performance metrics (Phase 6), the local SQLite database
+(Phase 7), and the richer multi-tab UI (Phase 8).
 """
 
 from datetime import date, timedelta
@@ -46,6 +60,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+from src.backtesting.engine import BacktestInputError, run_backtest
 from src.config import (
     APP_NAME,
     APP_TAGLINE,
@@ -192,6 +207,72 @@ def render_strategy_signals_section(df: pd.DataFrame, strategy) -> None:
         st.dataframe(events_df, width="stretch")
 
 
+def render_backtest_section(result, context: dict) -> None:
+    """Display a completed BacktestResult: final value, trade count, the
+    equity curve, and a trade table.
+
+    PREVIEW ONLY: deliberately does not compute or show Sharpe ratio,
+    max drawdown, win rate, or CAGR — those are Phase 6. This section
+    only reports the raw simulation output, the same way
+    `render_strategy_signals_section` only reports raw signals rather
+    than judging them.
+    """
+    st.subheader("Backtest Results (Preview)")
+    param_str = ", ".join(f"{k}={v}" for k, v in context["strategy_params"].items())
+    st.caption(
+        f"Ran **{context['strategy_name']}** ({param_str}) on **{context['ticker']}**, "
+        f"{context['start_date']} to {context['end_date']}, starting capital "
+        f"${context['initial_capital']:,.2f}. Change settings and click **Run Backtest** "
+        "again to update this."
+    )
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Initial Capital", f"${result.initial_capital:,.2f}")
+    col2.metric("Final Portfolio Value", f"${result.final_value:,.2f}")
+    col3.metric("Completed Trades", result.num_trades)
+
+    if result.open_position is not None:
+        op = result.open_position
+        st.info(
+            f"Still holding an **open position** at the end of the data: "
+            f"{op.quantity} shares bought at ${op.entry_price:,.2f} on "
+            f"{op.entry_date.date()}. Not counted as a completed trade (it "
+            "wasn't sold, so it isn't a realized round trip) — its current "
+            "unrealized value IS included in the final portfolio value above."
+        )
+
+    if result.equity_curve.empty:
+        st.info("No bars were processed for this data — nothing to chart.")
+        return
+
+    st.markdown("**Portfolio value over time**")
+    st.line_chart(result.equity_curve.set_index("date")["total_value"], width="stretch")
+    st.caption(
+        "Total portfolio value (cash + holdings) at the close of every bar — "
+        "this is what a real trader's account balance would have shown."
+    )
+
+    if result.trades:
+        st.markdown("**Completed trades**")
+        trades_df = pd.DataFrame(
+            [
+                {
+                    "Entry Date": t.entry_date.date(),
+                    "Entry Price": round(t.entry_price, 2),
+                    "Exit Date": t.exit_date.date(),
+                    "Exit Price": round(t.exit_price, 2),
+                    "Quantity": t.quantity,
+                    "P&L ($)": round(t.pnl, 2),
+                    "P&L (%)": round(t.pnl_pct, 2),
+                }
+                for t in result.trades
+            ]
+        )
+        st.dataframe(trades_df, width="stretch")
+    else:
+        st.info("No completed trades for this data/strategy/parameter combination.")
+
+
 def main() -> None:
     st.title(APP_NAME)
     st.caption(APP_TAGLINE)
@@ -212,7 +293,7 @@ def main() -> None:
             help="Historical window to load. Real data comes from yfinance; "
             "if that fails, synthetic sample data is used instead.",
         )
-        st.number_input(
+        initial_capital = st.number_input(
             "Initial virtual capital ($)",
             min_value=100.0,
             value=DEFAULT_INITIAL_CAPITAL,
@@ -249,13 +330,20 @@ def main() -> None:
         except StrategyInputError as exc:
             strategy_error = str(exc)
 
-        st.button("Run Backtest", disabled=True, help="Enabled once the backtesting engine exists (Phase 5).")
+        run_clicked = st.button(
+            "Run Backtest",
+            disabled=(strategy is None),
+            help="Simulate trades using the selected strategy over the loaded data."
+            if strategy is not None
+            else "Fix the strategy parameters above first.",
+        )
 
     st.subheader("Project status")
     st.markdown(
-        "**Phase 4 is live**: pick a strategy and its parameters on the left to "
-        "see BUY/SELL/HOLD signals generated from the loaded data below. "
-        "Backtesting (actually simulating trades and P&L) is still ahead."
+        "**Phase 5 is live**: configure a strategy and initial capital on the "
+        "left, then click **Run Backtest** to simulate trades over the loaded "
+        "data. Performance ratios (Sharpe, drawdown, win rate, CAGR) are still "
+        "ahead — this shows the raw simulation only."
     )
 
     with st.expander("What do these terms mean? (OHLCV, adjusted price, etc.)"):
@@ -329,6 +417,24 @@ def main() -> None:
         st.error(f"Could not configure strategy: {strategy_error}")
     elif strategy is not None:
         render_strategy_signals_section(df, strategy)
+
+    if run_clicked and strategy is not None:
+        try:
+            bt_result = run_backtest(df, strategy, initial_capital=float(initial_capital))
+            st.session_state["backtest_result"] = bt_result
+            st.session_state["backtest_context"] = {
+                "strategy_name": strategy.name,
+                "strategy_params": strategy.describe()["params"],
+                "ticker": result.ticker,
+                "start_date": start_date,
+                "end_date": end_date,
+                "initial_capital": float(initial_capital),
+            }
+        except (BacktestInputError, StrategyInputError) as exc:
+            st.error(f"Backtest failed: {exc}")
+
+    if "backtest_result" in st.session_state:
+        render_backtest_section(st.session_state["backtest_result"], st.session_state["backtest_context"])
 
 
 if __name__ == "__main__":
