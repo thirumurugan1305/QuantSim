@@ -14,9 +14,9 @@ data and shows you the resulting portfolio value, trade log, and
 performance metrics.
 
 **This project is being built in phases.** This README will grow as each
-phase lands. Right now, **Phases 1–5** are complete.
+phase lands. Right now, **Phases 1–6** are complete.
 
-## Current status: Phase 5 — Backtesting Engine
+## Current status: Phase 6 — Performance Analytics
 
 What works today:
 - The app boots with `streamlit run app.py`.
@@ -29,31 +29,36 @@ What works today:
 - `src/strategies/` turns those indicators into standardized BUY / SELL /
   HOLD signals via Moving Average Crossover, RSI, and MACD strategies,
   live-configurable in the sidebar with a "Strategy Signals Preview".
-- **New in Phase 5:** `src/backtesting/` actually simulates trades from
-  those signals. Click **Run Backtest** in the sidebar to:
-  - Walk through the loaded data bar-by-bar, chronologically.
-  - BUY spends all available cash on whole shares (no fractional
-    shares, no leverage); SELL closes the entire position. Long-only —
-    no short selling.
-  - Track cash, shares held, and total portfolio value at every bar.
-  - Record every **completed** trade (entry/exit price, date, P&L), and
-    separately report any position still **open** (unrealized) at the
-    end of the data, without force-closing it.
-  - Execution happens at the same bar's closing price the signal was
-    generated from — a documented simplifying assumption for this
-    version (see `src/backtesting/engine.py` for the full reasoning).
-  - This is still a **preview**: no Sharpe ratio, max drawdown, win
-    rate, or CAGR yet — those are Phase 6. Only raw results (final
-    value, trade count, equity curve, trade table) are shown.
-- 97 automated tests total across `tests/test_indicators.py`,
-  `tests/test_strategies.py`, and `tests/test_backtesting.py`, including
-  dedicated look-ahead-bias checks at both the strategy and backtest
-  layers.
+- `src/backtesting/` simulates trades from those signals: long-only,
+  all-in/all-out, whole shares only, executed at the same bar's closing
+  price. Click **Run Backtest** to see final portfolio value, an equity
+  curve, and a completed-trade table.
+- **New in Phase 6:** `src/analytics/performance_metrics.py` computes
+  descriptive statistics straight from that same backtest result — no
+  strategy or backtest is re-run:
+  - Total Return, Absolute P&L, Number of Trades, Win Rate
+  - Average Winning Trade, Average Losing Trade
+  - Maximum Drawdown (reported as a negative percentage)
+  - Sharpe Ratio (assumes a 0% annual risk-free rate by default — a
+    stated simplifying assumption, not a live market rate) and
+    Annualized Volatility
+  - A metric that isn't meaningful for the current data (e.g. no
+    completed trades yet, or a flat/too-short equity curve) always
+    shows **N/A** — never a misleading 0 or a crash.
+  - An open position still held at the end of the data is never counted
+    as a completed trade, but its unrealized value is still reflected in
+    Total Return/P&L, and the UI notes this explicitly.
+- 120 automated tests total across `tests/test_indicators.py`,
+  `tests/test_strategies.py`, `tests/test_backtesting.py`, and
+  `tests/test_performance_metrics.py`, including dedicated
+  look-ahead-bias checks and independently-verified Sharpe/volatility
+  calculations (checked against Python's `statistics` module, not just
+  against the implementation's own pandas logic).
 
-What is *not* built yet (coming in later phases): performance metrics
-(Sharpe ratio, drawdown, win rate, CAGR), the local SQLite database, and
-the full multi-tab UI. See `LEARNING_GUIDE.md` and `ARCHITECTURE.md`
-(added as those phases land) for details.
+What is *not* built yet (coming in later phases): the local SQLite
+database (Phase 7) and the richer multi-tab UI (Phase 8). See
+`LEARNING_GUIDE.md` and `ARCHITECTURE.md` (added as those phases land)
+for details.
 
 ## Requirements
 
@@ -111,13 +116,15 @@ QuantSim/
 │   ├── backtesting/
 │   │   ├── models.py                # Trade, OpenPosition, PortfolioSnapshot, BacktestResult
 │   │   └── engine.py                # Phase 5: BacktestEngine, run_backtest()
-│   ├── analytics/             # (Phase 6) performance metrics
+│   ├── analytics/
+│   │   └── performance_metrics.py   # Phase 6: PerformanceMetrics, calculate_performance_metrics()
 │   ├── database/              # (Phase 7) SQLite persistence
 │   └── ui/                    # (Phase 8) chart helpers
 └── tests/
     ├── test_indicators.py     # Phase 3: 31 tests for SMA/EMA/RSI/MACD
     ├── test_strategies.py     # Phase 4: 36 tests for the strategy layer
-    └── test_backtesting.py    # Phase 5: 30 tests for the backtesting engine
+    ├── test_backtesting.py    # Phase 5: 30 tests for the backtesting engine
+    └── test_performance_metrics.py  # Phase 6: 23 tests for performance analytics
 ```
 
 ## Screenshots
@@ -136,8 +143,14 @@ _(placeholder — add a screenshot of the running app here once you have one)_
   the same bar's closing price — no short selling, partial position
   sizing, or transaction costs by default (see `src/backtesting/engine.py`
   for the full list of documented assumptions).
-- No performance metrics (Sharpe ratio, max drawdown, win rate, CAGR) or
-  database persistence exist yet.
+- Performance metrics assume a 0% annual risk-free rate for the Sharpe
+  Ratio by default (configurable, but not connected to any live rate
+  source) and use a simple annual-to-daily conversion
+  (`rate / TRADING_DAYS_PER_YEAR`), not compounding — a stated
+  simplification, not a real-world-grade calculation.
+- No benchmark comparison (e.g. vs. buy-and-hold) exists yet, and no
+  database persistence exists yet — results are only kept for the
+  current browser session.
 
 ## Disclaimer
 
@@ -147,7 +160,6 @@ advice.
 
 ## Future improvements
 
-See the phase list in this project's build plan — performance analytics
-(Phase 6), local SQLite persistence (Phase 7), a richer multi-tab UI
-(Phase 8), and an optional/experimental ML module are all planned for
-later phases.
+See the phase list in this project's build plan — local SQLite
+persistence (Phase 7), a richer multi-tab UI (Phase 8), and an
+optional/experimental ML module are all planned for later phases.

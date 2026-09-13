@@ -51,8 +51,22 @@ Phase 5 scope (this file, today):
       configuration it was actually run with, since that configuration
       may no longer match the sidebar's current values.
 
-Still not built: performance metrics (Phase 6), the local SQLite database
-(Phase 7), and the richer multi-tab UI (Phase 8).
+Phase 6 scope (this file, today):
+    - A new "Performance Metrics (Preview)" section, shown right after
+      "Backtest Results (Preview)", computed via
+      `src.analytics.calculate_performance_metrics()` on the SAME
+      BacktestResult already in `st.session_state` — no new backtest is
+      run, no strategy is re-invoked.
+    - Displays Total Return, Absolute P&L, Win Rate, Max Drawdown,
+      Sharpe Ratio, Number of Trades, Average Win, Average Loss, and
+      Annualized Volatility. Any metric that isn't meaningful for the
+      current data (e.g. no completed trades yet) shows "N/A".
+    - If the backtest ended with a still-open position, a note clarifies
+      that the displayed return includes that position's unrealized
+      value.
+
+Still not built: the local SQLite database (Phase 7) and the richer
+multi-tab UI (Phase 8).
 """
 
 from datetime import date, timedelta
@@ -60,6 +74,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+from src.analytics import calculate_performance_metrics
 from src.backtesting.engine import BacktestInputError, run_backtest
 from src.config import (
     APP_NAME,
@@ -273,6 +288,66 @@ def render_backtest_section(result, context: dict) -> None:
         st.info("No completed trades for this data/strategy/parameter combination.")
 
 
+def _format_metric(value, suffix: str = "", decimals: int = 2) -> str:
+    """Format a metric value for display, or 'N/A' if it's None.
+
+    Centralizing this in one place means every metric card handles the
+    "not applicable" case the exact same way, rather than each one
+    inventing its own N/A formatting.
+    """
+    if value is None:
+        return "N/A"
+    return f"{value:,.{decimals}f}{suffix}"
+
+
+def _format_dollars(value) -> str:
+    """Like _format_metric, but with a leading '$' when the value isn't None."""
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def render_performance_metrics_section(result) -> None:
+    """Compute and display Phase 6 performance statistics for the
+    already-completed backtest `result`.
+
+    This calls `calculate_performance_metrics()` fresh each time it
+    renders (cheap, pure arithmetic over data already in memory) — it
+    does NOT re-run the backtest or the strategy. Reuses the exact same
+    BacktestResult already sitting in `st.session_state` from the
+    "Backtest Results" section above.
+    """
+    st.subheader("Performance Metrics (Preview)")
+    metrics = calculate_performance_metrics(result)
+
+    if metrics.has_open_position:
+        st.caption(
+            "ℹ️ An open position was still held at the end of the data — "
+            "the figures below include its unrealized value, since that's "
+            "already folded into the final portfolio value."
+        )
+
+    row1 = st.columns(5)
+    row1[0].metric("Total Return", _format_metric(metrics.total_return_pct, "%"))
+    row1[1].metric("Absolute P&L", f"${metrics.absolute_pnl:,.2f}")
+    row1[2].metric("Win Rate", _format_metric(metrics.win_rate_pct, "%"))
+    row1[3].metric("Max Drawdown", _format_metric(metrics.max_drawdown_pct, "%"))
+    row1[4].metric("Sharpe Ratio", _format_metric(metrics.sharpe_ratio, decimals=2))
+
+    row2 = st.columns(4)
+    row2[0].metric("Number of Trades", metrics.num_trades)
+    row2[1].metric("Average Win", _format_dollars(metrics.average_win))
+    row2[2].metric("Average Loss", _format_dollars(metrics.average_loss))
+    row2[3].metric("Annualized Volatility", _format_metric(metrics.annualized_volatility_pct, "%"))
+
+    st.caption(
+        "Sharpe Ratio assumes a 0% annual risk-free rate (a stated simplifying "
+        "assumption for this educational simulator, not a real-world rate). "
+        "'N/A' means there isn't enough data or completed trades to compute "
+        "that metric meaningfully — it is never silently shown as zero."
+    )
+
+
 def main() -> None:
     st.title(APP_NAME)
     st.caption(APP_TAGLINE)
@@ -435,6 +510,7 @@ def main() -> None:
 
     if "backtest_result" in st.session_state:
         render_backtest_section(st.session_state["backtest_result"], st.session_state["backtest_context"])
+        render_performance_metrics_section(st.session_state["backtest_result"])
 
 
 if __name__ == "__main__":
