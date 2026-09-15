@@ -65,8 +65,23 @@ Phase 6 scope (this file, today):
       that the displayed return includes that position's unrealized
       value.
 
-Still not built: the local SQLite database (Phase 7) and the richer
-multi-tab UI (Phase 8).
+Phase 7 scope (this file, today):
+    - A "Save Backtest" button next to the existing backtest results,
+      enabled only when a result exists. Persists the current
+      BacktestResult + its already-computed PerformanceMetrics to a
+      local SQLite database via `src.database.repository` — no
+      recomputation, no re-running the strategy or engine.
+    - A "Saved Backtests" section listing previously saved runs (id,
+      date saved, ticker, strategy, date range, total return%).
+    - "Load Selected" reconstructs a BacktestResult from the database
+      and places it into the SAME session-state slot a live backtest
+      uses, so the existing "Backtest Results" and "Performance
+      Metrics" sections render it with zero new rendering logic.
+    - "Delete Selected" removes a saved backtest (and its trades/
+      snapshots/metrics, via cascading delete) with a simple two-step
+      confirmation, since Streamlit has no native confirm dialog.
+
+Still not built: the richer multi-tab UI (Phase 8).
 """
 
 from datetime import date, timedelta
@@ -87,6 +102,13 @@ from src.data.market_data import (
     MarketDataValidationError,
     fetch_market_data,
 )
+from src.database.repository import (
+    delete_backtest_result,
+    init_db,
+    list_saved_backtests,
+    load_backtest_result,
+    save_backtest_result,
+)
 from src.indicators.technical_indicators import (
     calculate_macd,
     calculate_rsi,
@@ -101,6 +123,10 @@ from src.strategies import (
 )
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
+
+# Safe to call every run: init_db() only creates what's missing
+# (CREATE TABLE IF NOT EXISTS) and never touches existing data.
+init_db()
 
 # Minimum rows genuinely needed before each indicator produces at least
 # one non-NaN value (see docstrings in technical_indicators.py for why).
@@ -348,6 +374,143 @@ def render_performance_metrics_section(result) -> None:
     )
 
 
+def _format_saved_backtest_label(row: dict) -> str:
+    return_str = f"{row['total_return_pct']:.2f}%" if row["total_return_pct"] is not None else "N/A"
+    return f"#{row['id']} — {row['ticker']} — {row['strategy_name']} — {return_str} — saved {row['created_at'][:19]}"
+
+
+def render_save_load_section() -> None:
+    """Save the current backtest to SQLite, and browse/load/delete
+    previously saved ones.
+
+    Reuses the SAME `st.session_state["backtest_result"]` /
+    `["backtest_context"]` slots a live "Run Backtest" click populates —
+    loading a saved backtest writes into those exact slots, so
+    `render_backtest_section()` and `render_performance_metrics_section()`
+    render it with no new branching logic, whether the result just came
+    from a live run or from the database.
+    """
+    st.subheader("Save & Load Backtests")
+
+    has_result = "backtest_result" in st.session_state
+    already_saved = st.session_state.get("backtest_result_saved", False)
+
+    save_col, status_col = st.columns([1, 3])
+    with save_col:
+        if st.button(
+            "Save Backtest",
+            disabled=(not has_result) or already_saved,
+            help="Run a backtest first." if not has_result else None,
+        ):
+            result = st.session_state["backtest_result"]
+            context = st.session_state["backtest_context"]
+            # Reuses the exact same Phase 6 function used for on-screen
+            # display -- a pure, cheap recalculation from data already in
+            # memory, NOT a duplicated formula. The database layer itself
+            # never computes metrics; it only stores what's passed in here.
+            metrics = calculate_performance_metrics(result)
+            new_id = save_backtest_result(
+                result=result,
+                metrics=metrics,
+                ticker=context["ticker"],
+                start_date=context["start_date"],
+                end_date=context["end_date"],
+            )
+            st.session_state["backtest_result_saved"] = True
+            st.session_state["last_saved_id"] = new_id
+            # Rerun immediately so the button's `disabled=` (computed from
+            # `already_saved` above, necessarily BEFORE this click's
+            # result is known) reflects the just-saved state right away
+            # -- without this, the button would still render as clickable
+            # for one extra render, and a second real click in that
+            # window could create a genuine duplicate row.
+            st.rerun()
+
+    with status_col:
+        # Re-read fresh here, AFTER the button block above may have just
+        # updated it in this same script run -- reusing the `already_saved`
+        # local captured before the click would show a stale value and
+        # miss the success message on the very rerun the save happened.
+        if st.session_state.get("backtest_result_saved", False) and "last_saved_id" in st.session_state:
+            st.success(f"Saved as Backtest #{st.session_state['last_saved_id']}.")
+        elif not has_result:
+            st.caption("Run a backtest above, then save it here.")
+
+    with st.expander("Saved Backtests", expanded=False):
+        saved = list_saved_backtests()
+
+        if not saved:
+            st.info("No saved backtests yet.")
+            return
+
+        table_df = pd.DataFrame(
+            [
+                {
+                    "ID": row["id"],
+                    "Saved": row["created_at"][:19],
+                    "Ticker": row["ticker"],
+                    "Strategy": row["strategy_name"],
+                    "Date Range": f"{row['start_date']} → {row['end_date']}",
+                    "Total Return": f"{row['total_return_pct']:.2f}%" if row["total_return_pct"] is not None else "N/A",
+                }
+                for row in saved
+            ]
+        )
+        st.dataframe(table_df, width="stretch", hide_index=True)
+
+        labels = {_format_saved_backtest_label(row): row for row in saved}
+        selected_label = st.selectbox("Select a saved backtest", options=list(labels.keys()))
+        selected_row = labels[selected_label]
+        selected_id = selected_row["id"]
+
+        load_col, delete_col = st.columns(2)
+
+        with load_col:
+            if st.button("Load Selected"):
+                loaded_result = load_backtest_result(selected_id)
+                if loaded_result is None:
+                    st.error(f"Backtest #{selected_id} no longer exists (it may have just been deleted).")
+                else:
+                    st.session_state["backtest_result"] = loaded_result
+                    st.session_state["backtest_context"] = {
+                        "strategy_name": loaded_result.strategy_name,
+                        "strategy_params": loaded_result.strategy_params,
+                        "ticker": selected_row["ticker"],
+                        "start_date": selected_row["start_date"],
+                        "end_date": selected_row["end_date"],
+                        "initial_capital": loaded_result.initial_capital,
+                    }
+                    # Already in the database -- mark as saved so the
+                    # Save button doesn't invite creating a duplicate row.
+                    st.session_state["backtest_result_saved"] = True
+                    st.session_state["last_saved_id"] = selected_id
+                    st.rerun()
+
+        with delete_col:
+            # Two-step confirmation, since Streamlit has no native
+            # confirm dialog: the first click only arms a pending delete
+            # for THIS specific id; a second, distinct click confirms it.
+            pending_id = st.session_state.get("pending_delete_id")
+            if pending_id == selected_id:
+                st.warning(f"Delete Backtest #{selected_id}? This cannot be undone.")
+                if st.button("Confirm Delete", type="primary"):
+                    delete_backtest_result(selected_id)
+                    st.session_state["pending_delete_id"] = None
+                    # Deleting a backtest that happens to be the one
+                    # currently loaded in memory does not affect the
+                    # in-memory result at all -- it stays visible above
+                    # until a new run or load replaces it; only a later
+                    # attempt to re-load this same id would find it gone.
+                    st.rerun()
+                if st.button("Cancel"):
+                    st.session_state["pending_delete_id"] = None
+                    st.rerun()
+            else:
+                if st.button("Delete Selected"):
+                    st.session_state["pending_delete_id"] = selected_id
+                    st.rerun()
+
+
 def main() -> None:
     st.title(APP_NAME)
     st.caption(APP_TAGLINE)
@@ -505,12 +668,18 @@ def main() -> None:
                 "end_date": end_date,
                 "initial_capital": float(initial_capital),
             }
+            # A fresh live run is a NEW, not-yet-saved result, even if a
+            # previous result (live or loaded) had already been saved.
+            st.session_state["backtest_result_saved"] = False
+            st.session_state.pop("last_saved_id", None)
         except (BacktestInputError, StrategyInputError) as exc:
             st.error(f"Backtest failed: {exc}")
 
     if "backtest_result" in st.session_state:
         render_backtest_section(st.session_state["backtest_result"], st.session_state["backtest_context"])
         render_performance_metrics_section(st.session_state["backtest_result"])
+
+    render_save_load_section()
 
 
 if __name__ == "__main__":
