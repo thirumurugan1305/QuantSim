@@ -14,61 +14,54 @@ data and shows you the resulting portfolio value, trade log, and
 performance metrics.
 
 **This project is being built in phases.** This README will grow as each
-phase lands. Right now, **Phases 1–7** are complete.
+phase lands. Right now, **Phases 1–8** are complete.
 
-## Current status: Phase 7 — SQLite Persistence
+## Current status: Phase 8 — Professional UI/UX
 
 What works today:
-- The app boots with `streamlit run app.py`.
+- The app boots with `streamlit run app.py`, now organized as a
+  **4-tab dashboard** — "Market & Signals", "Backtest Results",
+  "Performance", and "Saved Backtests" — instead of one long scrolling
+  page. The sidebar's inputs are grouped under clear section labels
+  (Market Data / Strategy / Backtest).
 - The sidebar's **ticker** and **date range** controls drive a real
   request to `src/data/market_data.py`, which tries a live `yfinance`
   download and transparently falls back to bundled synthetic sample data
-  if that fails.
+  if that fails; fetching and running a backtest now show a spinner.
 - `src/indicators/technical_indicators.py` provides reusable, tested SMA,
-  EMA, RSI, and MACD calculations, previewed on the main page.
+  EMA, RSI, and MACD calculations, previewed with interactive Plotly
+  charts (hover tooltips, RSI oversold/overbought bands, a MACD zero
+  line).
 - `src/strategies/` turns those indicators into standardized BUY / SELL /
   HOLD signals via Moving Average Crossover, RSI, and MACD strategies,
   live-configurable in the sidebar with a "Strategy Signals Preview".
 - `src/backtesting/` simulates trades from those signals: long-only,
   all-in/all-out, whole shares only, executed at the same bar's closing
-  price. Click **Run Backtest** to see final portfolio value, an equity
-  curve, and a completed-trade table.
+  price. **Run Backtest** now shows a price chart with actual ▲ BUY / ▼
+  SELL markers at each trade's exact execution point, an equity curve
+  with a cash/holdings hover breakdown, and a new drawdown-from-peak
+  chart, alongside the completed-trade table.
 - `src/analytics/performance_metrics.py` computes Total Return, Win Rate,
-  Max Drawdown, Sharpe Ratio, Annualized Volatility, and more, straight
-  from that same backtest result — shown in a "Performance Metrics"
-  section, with "N/A" wherever a metric genuinely isn't meaningful.
-- **New in Phase 7:** `src/database/repository.py` persists a completed
-  backtest (all its trades, its full equity curve, any open position,
-  and its performance metrics) to a local SQLite file using Python's
-  built-in `sqlite3` module — no external database, no ORM:
-  - **Save Backtest** stores the currently displayed result in one
-    all-or-nothing transaction; a "Saved Backtests" section lists every
-    previously saved run (id, date saved, ticker, strategy, date range,
-    total return%).
-  - **Load Selected** reconstructs a full `BacktestResult` from storage
-    and displays it through the exact same rendering code a live
-    backtest uses — there is no separate "viewing a saved result" code
-    path.
-  - **Delete Selected** removes a saved backtest (with a simple two-step
-    confirmation) and automatically removes its trades/snapshots/metrics
-    via a cascading delete; deleting a result that's currently on screen
-    never crashes the app, since the in-memory view and the database row
-    are independent.
-  - Derived values (`Trade.pnl`, `.pnl_pct`, `.is_win`) are never stored
-    — they're recomputed after loading from the same raw numbers the
-    `Trade` dataclass already uses, so a stored copy can never silently
-    drift out of sync with that logic.
-- 151 automated tests total across `tests/test_indicators.py`,
-  `tests/test_strategies.py`, `tests/test_backtesting.py`,
-  `tests/test_performance_metrics.py`, and `tests/test_database.py` —
-  including round-trip persistence checks, cascading-delete checks, a
-  direct proof that foreign-key enforcement is actually active (not just
-  declared), and a transaction-rollback test confirming a failed save
-  never leaves a partial record behind.
+  Max Drawdown, Sharpe Ratio, Annualized Volatility, and more, now
+  grouped into Returns / Risk / Trades sections on the "Performance" tab,
+  with "N/A" wherever a metric genuinely isn't meaningful.
+- `src/database/repository.py` persists a completed backtest to a local
+  SQLite file — Save, Load, and the two-step Delete confirmation all work
+  exactly as before, now on their own "Saved Backtests" tab.
+- **New in Phase 8:** `src/ui/charts.py` — pure, dependency-free
+  (no Streamlit import) Plotly chart-building functions, used across
+  every tab. `plotly` has been listed in `requirements.txt` since Phase
+  1; this is the first phase that actually uses it. No calculation
+  logic changed anywhere — every chart is built from data Phases 2–7
+  already compute (the drawdown chart reuses the exact same running-peak
+  formula `PerformanceMetrics.max_drawdown_pct` uses internally, kept as
+  its own small function so `src/analytics/` stays untouched).
+- 171 automated tests total, including 20 new chart tests that check
+  actual trace counts and marker coordinates against known input data
+  (not just "it rendered without crashing").
 
-What is *not* built yet: the richer multi-tab UI (Phase 8). See
-`LEARNING_GUIDE.md` and `ARCHITECTURE.md` (added as those phases land)
-for details.
+See `LEARNING_GUIDE.md` and `ARCHITECTURE.md` (added as those phases
+land) for details.
 
 ## Requirements
 
@@ -106,7 +99,7 @@ open it in your browser.
 
 ```
 QuantSim/
-├── app.py                     # Streamlit entry point (Phase 1)
+├── app.py                     # Streamlit entry point (Phase 1), 4-tab dashboard (Phase 8)
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
@@ -130,13 +123,15 @@ QuantSim/
 │   │   └── performance_metrics.py   # Phase 6: PerformanceMetrics, calculate_performance_metrics()
 │   ├── database/
 │   │   └── repository.py            # Phase 7: SQLite schema, save/load/list/delete
-│   └── ui/                    # (Phase 8) chart helpers
+│   └── ui/
+│       └── charts.py                # Phase 8: pure Plotly chart-building functions
 └── tests/
     ├── test_indicators.py     # Phase 3: 31 tests for SMA/EMA/RSI/MACD
     ├── test_strategies.py     # Phase 4: 36 tests for the strategy layer
     ├── test_backtesting.py    # Phase 5: 30 tests for the backtesting engine
     ├── test_performance_metrics.py  # Phase 6: 23 tests for performance analytics
-    └── test_database.py       # Phase 7: 31 tests for SQLite persistence
+    ├── test_database.py       # Phase 7: 31 tests for SQLite persistence
+    └── test_charts.py         # Phase 8: 20 tests for the Plotly chart builders
 ```
 
 ## Screenshots
@@ -173,6 +168,13 @@ _(placeholder — add a screenshot of the running app here once you have one)_
 - Saved `strategy_params` are stored as a JSON blob for display purposes
   only; they are never read back into strategy logic, so they can't
   silently affect how a loaded backtest behaves.
+- The price-with-trade-markers chart only appears when the currently
+  loaded market data (ticker + date range in the sidebar) matches the
+  backtest being displayed — this is intentional, to avoid overlaying
+  one ticker's trades on a different ticker's price chart, but it means
+  loading a saved backtest for a different symbol than what's currently
+  in the sidebar will show its equity curve and trade table without that
+  particular chart until the sidebar is updated to match.
 
 ## Disclaimer
 
@@ -182,6 +184,5 @@ advice.
 
 ## Future improvements
 
-See the phase list in this project's build plan — a richer multi-tab UI
-(Phase 8) and an optional/experimental ML module are planned for later
-phases.
+See the phase list in this project's build plan — an optional/
+experimental ML module is planned for a later phase.

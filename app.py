@@ -65,23 +65,32 @@ Phase 6 scope (this file, today):
       that the displayed return includes that position's unrealized
       value.
 
-Phase 7 scope (this file, today):
-    - A "Save Backtest" button next to the existing backtest results,
-      enabled only when a result exists. Persists the current
-      BacktestResult + its already-computed PerformanceMetrics to a
-      local SQLite database via `src.database.repository` — no
-      recomputation, no re-running the strategy or engine.
-    - A "Saved Backtests" section listing previously saved runs (id,
-      date saved, ticker, strategy, date range, total return%).
-    - "Load Selected" reconstructs a BacktestResult from the database
-      and places it into the SAME session-state slot a live backtest
-      uses, so the existing "Backtest Results" and "Performance
-      Metrics" sections render it with zero new rendering logic.
-    - "Delete Selected" removes a saved backtest (and its trades/
-      snapshots/metrics, via cascading delete) with a simple two-step
-      confirmation, since Streamlit has no native confirm dialog.
+Phase 8 scope (this file, today):
+    - The single long vertical page is reorganized into 4 tabs: "Market
+      & Signals", "Backtest Results", "Performance", and "Saved
+      Backtests" — the same sections that existed before, regrouped so
+      the page reads as a dashboard with distinct stages rather than one
+      long scroll.
+    - Charts that benefit from it now use the new pure Plotly builders in
+      `src/ui/charts.py` (price + SMA overlay + BUY/SELL trade markers,
+      RSI with oversold/overbought bands, MACD with a zero line, the
+      equity curve with a cash/holdings hover breakdown, and a new
+      drawdown-from-peak chart) instead of Streamlit's native
+      line/bar charts. Every one of these charts is built from data
+      Phases 2-7 already compute — no new calculation, only a richer
+      way to look at the same numbers.
+    - `st.spinner(...)` now wraps the two genuinely slow operations
+      (fetching market data, running a backtest) so a slow yfinance
+      call or a large backtest visibly shows it's working.
+    - The sidebar's inputs are unchanged but now grouped under small
+      section labels (Market Data / Strategy / Backtest) instead of one
+      flat list.
 
-Still not built: the richer multi-tab UI (Phase 8).
+No business logic changed in this phase: every `render_*` function
+still calls the exact same Phase 2-7 functions it always did
+(`fetch_market_data`, `run_backtest`, `calculate_performance_metrics`,
+`save_backtest_result`, etc.) — only how results are laid out and
+charted has changed.
 """
 
 from datetime import date, timedelta
@@ -121,6 +130,14 @@ from src.strategies import (
     Signal,
     StrategyInputError,
 )
+from src.ui.charts import (
+    build_drawdown_chart,
+    build_equity_curve_chart,
+    build_macd_chart,
+    build_price_chart,
+    build_rsi_chart,
+    build_signal_pulse_chart,
+)
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
@@ -159,14 +176,15 @@ def render_indicators_section(df: pd.DataFrame) -> None:
             f"Need at least {_SMA_LONG_WINDOW} rows for SMA {_SMA_LONG_WINDOW}; "
             f"only {n_rows} available. Showing SMA 20 only where possible."
         )
-    sma_df = pd.DataFrame(
-        {
-            "Adj Close": price,
-            "SMA_20": calculate_sma(price, 20),
-            f"SMA_{_SMA_LONG_WINDOW}": calculate_sma(price, _SMA_LONG_WINDOW),
-        }
+    sma_20 = calculate_sma(price, 20)
+    sma_long = calculate_sma(price, _SMA_LONG_WINDOW)
+    price_fig = build_price_chart(
+        df,
+        price_column="Adj Close",
+        sma_series={"SMA 20": sma_20, f"SMA {_SMA_LONG_WINDOW}": sma_long},
+        title="Price with Moving Averages",
     )
-    st.line_chart(sma_df, width="stretch")
+    st.plotly_chart(price_fig, width="stretch")
 
     # --- RSI -------------------------------------------------------------
     st.markdown(f"**RSI ({_RSI_PERIOD})**")
@@ -174,7 +192,7 @@ def render_indicators_section(df: pd.DataFrame) -> None:
         st.info(f"Need at least {_RSI_PERIOD + 1} rows for RSI({_RSI_PERIOD}); only {n_rows} available.")
     else:
         rsi = calculate_rsi(price, period=_RSI_PERIOD)
-        st.line_chart(rsi, width="stretch")
+        st.plotly_chart(build_rsi_chart(df["Date"], rsi, period=_RSI_PERIOD), width="stretch")
         st.caption(
             "Conventionally, RSI above 70 is considered 'overbought' and below 30 "
             "'oversold' — shown here for reference only, not acted on yet."
@@ -189,11 +207,10 @@ def render_indicators_section(df: pd.DataFrame) -> None:
         )
     else:
         macd_df = calculate_macd(price, fast=_MACD_FAST, slow=_MACD_SLOW, signal=_MACD_SIGNAL)
-        st.line_chart(macd_df[["macd_line", "signal_line"]], width="stretch")
-        st.bar_chart(macd_df["histogram"], width="stretch")
+        st.plotly_chart(build_macd_chart(df["Date"], macd_df), width="stretch")
         st.caption(
-            "Top: MACD line vs. signal line. Bottom: histogram (MACD line minus "
-            "signal line) — the gap most 'MACD crossover' strategies watch."
+            "MACD line vs. signal line, with the histogram (their difference) "
+            "shaded below — the gap most 'MACD crossover' strategies watch."
         )
 
 
@@ -225,12 +242,11 @@ def render_strategy_signals_section(df: pd.DataFrame, strategy) -> None:
     col3.metric("HOLD (no action)", int(counts.get(Signal.HOLD, 0)))
 
     # A simple numeric "signal pulse" over time: +1 on BUY, -1 on SELL,
-    # 0 on HOLD. This is a lightweight way to see WHEN signals fired
-    # using only Streamlit's native charts (Plotly-based BUY/SELL price
-    # markers are planned for Phase 8's richer UI).
+    # 0 on HOLD -- a lightweight view of when the strategy's raw rule
+    # fired (distinct from the "Backtest Results" tab's price chart,
+    # which marks where trades were actually EXECUTED).
     signal_numeric = signals.map({Signal.BUY: 1, Signal.SELL: -1, Signal.HOLD: 0})
-    pulse_df = pd.DataFrame({"Date": df["Date"].values, "signal": signal_numeric.values}).set_index("Date")
-    st.bar_chart(pulse_df, width="stretch")
+    st.plotly_chart(build_signal_pulse_chart(df["Date"], signal_numeric), width="stretch")
     st.caption("+1 = BUY, -1 = SELL, 0 = HOLD — shows when each strategy rule fired over time.")
 
     non_hold = signals[signals != Signal.HOLD]
@@ -248,17 +264,24 @@ def render_strategy_signals_section(df: pd.DataFrame, strategy) -> None:
         st.dataframe(events_df, width="stretch")
 
 
-def render_backtest_section(result, context: dict) -> None:
-    """Display a completed BacktestResult: final value, trade count, the
-    equity curve, and a trade table.
+def render_backtest_section(result, context: dict, price_df: pd.DataFrame | None = None) -> None:
+    """Display a completed BacktestResult: final value, trade count, a
+    price chart with BUY/SELL markers, the equity curve, a drawdown
+    chart, and a trade table.
 
     PREVIEW ONLY: deliberately does not compute or show Sharpe ratio,
-    max drawdown, win rate, or CAGR — those are Phase 6. This section
-    only reports the raw simulation output, the same way
-    `render_strategy_signals_section` only reports raw signals rather
-    than judging them.
+    max drawdown (as a number), win rate, or CAGR — those are Phase 6's
+    "Performance Metrics" section. This section only reports the raw
+    simulation output, the same way `render_strategy_signals_section`
+    only reports raw signals rather than judging them.
+
+    `price_df` (the same market-data DataFrame already loaded on the
+    "Market & Signals" tab) is optional so a LOADED (from the database)
+    backtest can still render its equity curve and trade table even
+    when the original price series isn't currently loaded in this
+    session — only the price-chart-with-markers is skipped in that case.
     """
-    st.subheader("Backtest Results (Preview)")
+    st.subheader("Backtest Results")
     param_str = ", ".join(f"{k}={v}" for k, v in context["strategy_params"].items())
     st.caption(
         f"Ran **{context['strategy_name']}** ({param_str}) on **{context['ticker']}**, "
@@ -282,16 +305,30 @@ def render_backtest_section(result, context: dict) -> None:
             "unrealized value IS included in the final portfolio value above."
         )
 
+    if price_df is not None and not price_df.empty:
+        st.markdown("**Price with executed trades**")
+        st.plotly_chart(
+            build_price_chart(price_df, trades=result.trades, title="Price — BUY/SELL Markers"),
+            width="stretch",
+        )
+        st.caption(
+            "▲ green = BUY, ▼ red = SELL, at the exact price and date each trade "
+            "actually executed."
+        )
+
     if result.equity_curve.empty:
         st.info("No bars were processed for this data — nothing to chart.")
         return
 
-    st.markdown("**Portfolio value over time**")
-    st.line_chart(result.equity_curve.set_index("date")["total_value"], width="stretch")
-    st.caption(
-        "Total portfolio value (cash + holdings) at the close of every bar — "
-        "this is what a real trader's account balance would have shown."
-    )
+    chart_col, drawdown_col = st.columns(2)
+    with chart_col:
+        st.markdown("**Portfolio value over time**")
+        st.plotly_chart(build_equity_curve_chart(result.equity_curve), width="stretch")
+        st.caption("Total portfolio value (cash + holdings) at the close of every bar.")
+    with drawdown_col:
+        st.markdown("**Drawdown from peak**")
+        st.plotly_chart(build_drawdown_chart(result.equity_curve), width="stretch")
+        st.caption("How far below its highest-ever value the portfolio has fallen, over time.")
 
     if result.trades:
         st.markdown("**Completed trades**")
@@ -299,17 +336,27 @@ def render_backtest_section(result, context: dict) -> None:
             [
                 {
                     "Entry Date": t.entry_date.date(),
-                    "Entry Price": round(t.entry_price, 2),
+                    "Entry Price": t.entry_price,
                     "Exit Date": t.exit_date.date(),
-                    "Exit Price": round(t.exit_price, 2),
+                    "Exit Price": t.exit_price,
                     "Quantity": t.quantity,
-                    "P&L ($)": round(t.pnl, 2),
-                    "P&L (%)": round(t.pnl_pct, 2),
+                    "P&L ($)": t.pnl,
+                    "P&L (%)": t.pnl_pct,
                 }
                 for t in result.trades
             ]
         )
-        st.dataframe(trades_df, width="stretch")
+        st.dataframe(
+            trades_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Entry Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Exit Price": st.column_config.NumberColumn(format="$%.2f"),
+                "P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "P&L (%)": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
     else:
         st.info("No completed trades for this data/strategy/parameter combination.")
 
@@ -343,7 +390,7 @@ def render_performance_metrics_section(result) -> None:
     BacktestResult already sitting in `st.session_state` from the
     "Backtest Results" section above.
     """
-    st.subheader("Performance Metrics (Preview)")
+    st.subheader("Performance Metrics")
     metrics = calculate_performance_metrics(result)
 
     if metrics.has_open_position:
@@ -353,18 +400,23 @@ def render_performance_metrics_section(result) -> None:
             "already folded into the final portfolio value."
         )
 
-    row1 = st.columns(5)
-    row1[0].metric("Total Return", _format_metric(metrics.total_return_pct, "%"))
-    row1[1].metric("Absolute P&L", f"${metrics.absolute_pnl:,.2f}")
-    row1[2].metric("Win Rate", _format_metric(metrics.win_rate_pct, "%"))
-    row1[3].metric("Max Drawdown", _format_metric(metrics.max_drawdown_pct, "%"))
-    row1[4].metric("Sharpe Ratio", _format_metric(metrics.sharpe_ratio, decimals=2))
+    st.markdown("**Returns**")
+    returns_row = st.columns(2)
+    returns_row[0].metric("Total Return", _format_metric(metrics.total_return_pct, "%"))
+    returns_row[1].metric("Absolute P&L", f"${metrics.absolute_pnl:,.2f}")
 
-    row2 = st.columns(4)
-    row2[0].metric("Number of Trades", metrics.num_trades)
-    row2[1].metric("Average Win", _format_dollars(metrics.average_win))
-    row2[2].metric("Average Loss", _format_dollars(metrics.average_loss))
-    row2[3].metric("Annualized Volatility", _format_metric(metrics.annualized_volatility_pct, "%"))
+    st.markdown("**Risk**")
+    risk_row = st.columns(3)
+    risk_row[0].metric("Max Drawdown", _format_metric(metrics.max_drawdown_pct, "%"))
+    risk_row[1].metric("Sharpe Ratio", _format_metric(metrics.sharpe_ratio, decimals=2))
+    risk_row[2].metric("Annualized Volatility", _format_metric(metrics.annualized_volatility_pct, "%"))
+
+    st.markdown("**Trades**")
+    trades_row = st.columns(4)
+    trades_row[0].metric("Number of Trades", metrics.num_trades)
+    trades_row[1].metric("Win Rate", _format_metric(metrics.win_rate_pct, "%"))
+    trades_row[2].metric("Average Win", _format_dollars(metrics.average_win))
+    trades_row[3].metric("Average Loss", _format_dollars(metrics.average_loss))
 
     st.caption(
         "Sharpe Ratio assumes a 0% annual risk-free rate (a stated simplifying "
@@ -517,7 +569,7 @@ def main() -> None:
     st.warning(DISCLAIMER, icon="⚠️")
 
     with st.sidebar:
-        st.header("Backtest Setup")
+        st.markdown("### 📊 Market Data")
         ticker = st.text_input(
             "Ticker symbol",
             value="AAPL",
@@ -531,14 +583,9 @@ def main() -> None:
             help="Historical window to load. Real data comes from yfinance; "
             "if that fails, synthetic sample data is used instead.",
         )
-        initial_capital = st.number_input(
-            "Initial virtual capital ($)",
-            min_value=100.0,
-            value=DEFAULT_INITIAL_CAPITAL,
-            step=500.0,
-            help="Simulated cash only — no real money is ever involved.",
-        )
-        st.markdown("**Strategy**")
+
+        st.divider()
+        st.markdown("### ⚙️ Strategy")
         strategy_name = st.selectbox(
             "Strategy",
             options=["Moving Average Crossover", "RSI", "MACD"],
@@ -568,97 +615,52 @@ def main() -> None:
         except StrategyInputError as exc:
             strategy_error = str(exc)
 
+        st.divider()
+        st.markdown("### 💰 Backtest")
+        initial_capital = st.number_input(
+            "Initial virtual capital ($)",
+            min_value=100.0,
+            value=DEFAULT_INITIAL_CAPITAL,
+            step=500.0,
+            help="Simulated cash only — no real money is ever involved.",
+        )
         run_clicked = st.button(
             "Run Backtest",
             disabled=(strategy is None),
+            width="stretch",
             help="Simulate trades using the selected strategy over the loaded data."
             if strategy is not None
             else "Fix the strategy parameters above first.",
         )
 
-    st.subheader("Project status")
-    st.markdown(
-        "**Phase 5 is live**: configure a strategy and initial capital on the "
-        "left, then click **Run Backtest** to simulate trades over the loaded "
-        "data. Performance ratios (Sharpe, drawdown, win rate, CAGR) are still "
-        "ahead — this shows the raw simulation only."
-    )
-
-    with st.expander("What do these terms mean? (OHLCV, adjusted price, etc.)"):
-        st.markdown(
-            "- **OHLCV** — Open, High, Low, Close, Volume: the five numbers "
-            "that summarize one day of trading for a stock.\n"
-            "- **DataFrame** — pandas' table structure; one row per trading "
-            "day here, one column per OHLCV field.\n"
-            "- **Time series** — data ordered by time, where order matters. "
-            "You can't shuffle trading days without breaking the meaning.\n"
-            "- **Adjusted vs. raw price** — 'Close' is the literal traded "
-            "price that day. 'Adj Close' retroactively accounts for "
-            "dividends and stock splits, so it reflects the true return an "
-            "investor would have seen over time.\n"
-            "- **Why validate input?** — A bad ticker or an impossible date "
-            "range doesn't always throw a clear error from the data "
-            "provider; sometimes it just comes back empty. Checking first "
-            "catches this early with a message you can act on."
-        )
-
     # ---- date_range can be a 1-tuple while the user is mid-selection in
     # the picker (they've clicked a start date but not an end date yet).
-    # Guard against that instead of crashing.
+    # Guard against that instead of crashing. This check (and every
+    # validation/computation step below) happens BEFORE the tabs are
+    # built, so a failure here shows one clear message instead of an
+    # empty or broken-looking set of tabs.
     if not isinstance(date_range, tuple) or len(date_range) != 2:
         st.info("Pick both a start and end date in the sidebar to load data.")
         return
 
     start_date, end_date = date_range
 
-    st.subheader("Market data")
-
     try:
-        result = fetch_market_data(ticker, start_date, end_date)
+        with st.spinner(f"Fetching market data for {ticker}..."):
+            result = fetch_market_data(ticker, start_date, end_date)
     except MarketDataValidationError as exc:
         st.error(str(exc))
         return
-
-    if result.source == SOURCE_LIVE:
-        st.success(f"Loaded live historical data for **{result.ticker}** via yfinance.", icon="✅")
-    else:
-        st.warning(
-            f"Could not load live data for **{result.ticker}** — showing "
-            "**synthetic sample data** instead. This is NOT real market data "
-            "for this ticker.",
-            icon="⚠️",
-        )
-
-    for w in result.warnings:
-        st.caption(f"ℹ️ {w}")
 
     df = result.data
     if df.empty:
         st.error("No usable data available for this request.")
         return
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rows loaded", len(df))
-    col2.metric("First date", str(df["Date"].min().date()))
-    col3.metric("Last date", str(df["Date"].max().date()))
-
-    st.dataframe(df.head(10), width="stretch")
-    st.line_chart(df.set_index("Date")["Adj Close"], width="stretch")
-    st.caption(
-        "Chart shows **Adj Close** (adjusted for splits/dividends) — see the "
-        "explanation above for why that's usually the more meaningful series."
-    )
-
-    render_indicators_section(df)
-
-    if strategy_error:
-        st.error(f"Could not configure strategy: {strategy_error}")
-    elif strategy is not None:
-        render_strategy_signals_section(df, strategy)
-
     if run_clicked and strategy is not None:
         try:
-            bt_result = run_backtest(df, strategy, initial_capital=float(initial_capital))
+            with st.spinner("Running backtest..."):
+                bt_result = run_backtest(df, strategy, initial_capital=float(initial_capital))
             st.session_state["backtest_result"] = bt_result
             st.session_state["backtest_context"] = {
                 "strategy_name": strategy.name,
@@ -675,11 +677,112 @@ def main() -> None:
         except (BacktestInputError, StrategyInputError) as exc:
             st.error(f"Backtest failed: {exc}")
 
-    if "backtest_result" in st.session_state:
-        render_backtest_section(st.session_state["backtest_result"], st.session_state["backtest_context"])
-        render_performance_metrics_section(st.session_state["backtest_result"])
+    tab_market, tab_backtest, tab_performance, tab_saved = st.tabs(
+        ["📊 Market & Signals", "📈 Backtest Results", "🎯 Performance", "💾 Saved Backtests"]
+    )
 
-    render_save_load_section()
+    with tab_market:
+        st.info(
+            "👋 **New here?** Pick a ticker and date range in the sidebar, choose a "
+            "strategy, then switch to the **Backtest Results** tab and click "
+            "**Run Backtest**.",
+            icon="👋",
+        )
+
+        with st.expander("What do these terms mean? (OHLCV, adjusted price, etc.)"):
+            st.markdown(
+                "- **OHLCV** — Open, High, Low, Close, Volume: the five numbers "
+                "that summarize one day of trading for a stock.\n"
+                "- **DataFrame** — pandas' table structure; one row per trading "
+                "day here, one column per OHLCV field.\n"
+                "- **Time series** — data ordered by time, where order matters. "
+                "You can't shuffle trading days without breaking the meaning.\n"
+                "- **Adjusted vs. raw price** — 'Close' is the literal traded "
+                "price that day. 'Adj Close' retroactively accounts for "
+                "dividends and stock splits, so it reflects the true return an "
+                "investor would have seen over time.\n"
+                "- **Why validate input?** — A bad ticker or an impossible date "
+                "range doesn't always throw a clear error from the data "
+                "provider; sometimes it just comes back empty. Checking first "
+                "catches this early with a message you can act on."
+            )
+
+        st.subheader("Market Data")
+
+        if result.source == SOURCE_LIVE:
+            st.success(f"Loaded live historical data for **{result.ticker}** via yfinance.", icon="✅")
+        else:
+            st.warning(
+                f"Could not load live data for **{result.ticker}** — showing "
+                "**synthetic sample data** instead. This is NOT real market data "
+                "for this ticker.",
+                icon="⚠️",
+            )
+
+        for w in result.warnings:
+            st.caption(f"ℹ️ {w}")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rows loaded", len(df))
+        col2.metric("First date", str(df["Date"].min().date()))
+        col3.metric("Last date", str(df["Date"].max().date()))
+
+        st.dataframe(df.head(10), width="stretch", hide_index=True)
+        st.plotly_chart(build_price_chart(df, title=f"{result.ticker} — Adj Close"), width="stretch")
+        st.caption(
+            "Chart shows **Adj Close** (adjusted for splits/dividends) — see the "
+            "explanation above for why that's usually the more meaningful series."
+        )
+
+        render_indicators_section(df)
+
+        if strategy_error:
+            st.error(f"Could not configure strategy: {strategy_error}")
+        elif strategy is not None:
+            render_strategy_signals_section(df, strategy)
+
+    with tab_backtest:
+        if "backtest_result" in st.session_state:
+            bt_context = st.session_state["backtest_context"]
+            # Only overlay the currently-loaded market data on the price
+            # chart if it actually corresponds to the backtest being
+            # displayed -- e.g. after loading a SAVED backtest for a
+            # different ticker/date range than what's currently in the
+            # sidebar, showing today's price series with that backtest's
+            # trade markers would overlay trades onto the WRONG price
+            # data. In that mismatch case, the price-with-markers chart
+            # is simply skipped (render_backtest_section handles
+            # `price_df=None` gracefully) -- the equity curve and trade
+            # table still render either way, since those come from the
+            # stored result itself, not from today's market data fetch.
+            price_df_matches = (
+                bt_context.get("ticker") == result.ticker
+                and bt_context.get("start_date") == start_date
+                and bt_context.get("end_date") == end_date
+            )
+            render_backtest_section(
+                st.session_state["backtest_result"],
+                bt_context,
+                price_df=df if price_df_matches else None,
+            )
+        else:
+            st.info(
+                "No backtest has been run yet. Configure a strategy and click "
+                "**Run Backtest** in the sidebar, or load a previous one from "
+                "the **Saved Backtests** tab."
+            )
+
+    with tab_performance:
+        if "backtest_result" in st.session_state:
+            render_performance_metrics_section(st.session_state["backtest_result"])
+        else:
+            st.info(
+                "No backtest has been run yet — performance statistics will "
+                "appear here once one has."
+            )
+
+    with tab_saved:
+        render_save_load_section()
 
 
 if __name__ == "__main__":
