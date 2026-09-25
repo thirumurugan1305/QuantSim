@@ -14,54 +14,38 @@ data and shows you the resulting portfolio value, trade log, and
 performance metrics.
 
 **This project is being built in phases.** This README will grow as each
-phase lands. Right now, **Phases 1–8** are complete.
+phase lands. Right now, **Phases 1–9** are complete.
 
-## Current status: Phase 8 — Professional UI/UX
+## Current status: Phase 9 — Testing, Documentation & Repository Quality
 
-What works today:
-- The app boots with `streamlit run app.py`, now organized as a
-  **4-tab dashboard** — "Market & Signals", "Backtest Results",
-  "Performance", and "Saved Backtests" — instead of one long scrolling
-  page. The sidebar's inputs are grouped under clear section labels
-  (Market Data / Strategy / Backtest).
-- The sidebar's **ticker** and **date range** controls drive a real
-  request to `src/data/market_data.py`, which tries a live `yfinance`
-  download and transparently falls back to bundled synthetic sample data
-  if that fails; fetching and running a backtest now show a spinner.
-- `src/indicators/technical_indicators.py` provides reusable, tested SMA,
-  EMA, RSI, and MACD calculations, previewed with interactive Plotly
-  charts (hover tooltips, RSI oversold/overbought bands, a MACD zero
-  line).
-- `src/strategies/` turns those indicators into standardized BUY / SELL /
-  HOLD signals via Moving Average Crossover, RSI, and MACD strategies,
-  live-configurable in the sidebar with a "Strategy Signals Preview".
-- `src/backtesting/` simulates trades from those signals: long-only,
-  all-in/all-out, whole shares only, executed at the same bar's closing
-  price. **Run Backtest** now shows a price chart with actual ▲ BUY / ▼
-  SELL markers at each trade's exact execution point, an equity curve
-  with a cash/holdings hover breakdown, and a new drawdown-from-peak
-  chart, alongside the completed-trade table.
-- `src/analytics/performance_metrics.py` computes Total Return, Win Rate,
-  Max Drawdown, Sharpe Ratio, Annualized Volatility, and more, now
-  grouped into Returns / Risk / Trades sections on the "Performance" tab,
-  with "N/A" wherever a metric genuinely isn't meaningful.
-- `src/database/repository.py` persists a completed backtest to a local
-  SQLite file — Save, Load, and the two-step Delete confirmation all work
-  exactly as before, now on their own "Saved Backtests" tab.
-- **New in Phase 8:** `src/ui/charts.py` — pure, dependency-free
-  (no Streamlit import) Plotly chart-building functions, used across
-  every tab. `plotly` has been listed in `requirements.txt` since Phase
-  1; this is the first phase that actually uses it. No calculation
-  logic changed anywhere — every chart is built from data Phases 2–7
-  already compute (the drawdown chart reuses the exact same running-peak
-  formula `PerformanceMetrics.max_drawdown_pct` uses internally, kept as
-  its own small function so `src/analytics/` stays untouched).
-- 171 automated tests total, including 20 new chart tests that check
-  actual trace counts and marker coordinates against known input data
-  (not just "it rendered without crashing").
+Phases 1–8 delivered the full working application — market data,
+indicators, strategies, backtesting, performance analytics, SQLite
+persistence, and a professional 4-tab UI (see the phase table in
+`PROJECT_REPORT.md` for the full breakdown). Phase 9 adds no new
+features; it closes real gaps in testing and documentation instead:
 
-See `LEARNING_GUIDE.md` and `ARCHITECTURE.md` (added as those phases
-land) for details.
+- **New: `tests/test_integration.py`** — end-to-end tests that run a
+  real strategy through a real backtest, through real performance
+  metrics, through a real SQLite save/load round trip, using the
+  project's own bundled sample data. Every other test file is thorough
+  at testing one layer in isolation with small hand-built fixtures; this
+  file specifically checks that *real* output from one layer, fed
+  unmodified into the next, still behaves correctly — including
+  confirming that metrics recomputed on a *loaded* backtest still match
+  the metrics computed before it was saved.
+- **New: `tests/test_app.py`** — permanent UI regression tests using
+  `streamlit.testing.v1.AppTest`, covering the full Run Backtest → Save
+  → Load → Delete workflow against an isolated temporary database. Every
+  prior phase verified this workflow manually during development; it was
+  never previously saved as an actual, repeatable test.
+- **New: `ARCHITECTURE.md`, `LEARNING_GUIDE.md`, `PROJECT_REPORT.md`** —
+  see below.
+- 190 automated tests total (171 from Phases 1–8, plus 8 integration
+  tests and 11 UI regression tests) — no existing test was modified.
+
+See `ARCHITECTURE.md` for how the codebase is structured and why,
+`LEARNING_GUIDE.md` for the concepts explained across all 9 phases, and
+`PROJECT_REPORT.md` for a portfolio-style summary of the whole project.
 
 ## Requirements
 
@@ -95,6 +79,30 @@ streamlit run app.py
 Streamlit will print a local URL (typically `http://localhost:8501`) —
 open it in your browser.
 
+## Running Tests
+
+```bash
+pytest tests/          # full suite (190 tests)
+pytest tests/ -v       # verbose, one line per test
+pytest tests/test_backtesting.py -v   # just one file
+```
+
+Tests are organized one file per layer, plus two cross-cutting files:
+
+| File | What it covers |
+|---|---|
+| `test_indicators.py` | SMA, EMA, RSI, MACD (31 tests) |
+| `test_strategies.py` | Moving Average, RSI, MACD strategies, incl. look-ahead-bias checks (36 tests) |
+| `test_backtesting.py` | The backtesting engine, incl. transaction rollback and no-look-ahead checks (30 tests) |
+| `test_performance_metrics.py` | Performance statistics, cross-checked against Python's `statistics` module (23 tests) |
+| `test_database.py` | SQLite persistence, incl. cascading deletes and foreign-key enforcement (31 tests) |
+| `test_charts.py` | Plotly chart-building functions, checking actual coordinates (20 tests) |
+| `test_integration.py` | Real strategy → backtest → metrics → save/load, end-to-end (8 tests) |
+| `test_app.py` | Permanent UI regression tests via `streamlit.testing.v1.AppTest` (11 tests) |
+
+Every database-touching test uses its own temporary SQLite file — the
+suite never reads or writes your real `quantsim.db`.
+
 ## Project structure (current)
 
 ```
@@ -102,6 +110,9 @@ QuantSim/
 ├── app.py                     # Streamlit entry point (Phase 1), 4-tab dashboard (Phase 8)
 ├── requirements.txt
 ├── README.md
+├── ARCHITECTURE.md            # Phase 9: how the codebase is structured and why
+├── LEARNING_GUIDE.md          # Phase 9: concepts explained across all 9 phases
+├── PROJECT_REPORT.md          # Phase 9: portfolio-style project summary
 ├── .gitignore
 ├── data/
 │   └── sample_market_data.csv # Synthetic offline fallback data
@@ -131,7 +142,9 @@ QuantSim/
     ├── test_backtesting.py    # Phase 5: 30 tests for the backtesting engine
     ├── test_performance_metrics.py  # Phase 6: 23 tests for performance analytics
     ├── test_database.py       # Phase 7: 31 tests for SQLite persistence
-    └── test_charts.py         # Phase 8: 20 tests for the Plotly chart builders
+    ├── test_charts.py         # Phase 8: 20 tests for the Plotly chart builders
+    ├── test_integration.py    # Phase 9: 8 real end-to-end pipeline tests
+    └── test_app.py            # Phase 9: 11 permanent AppTest UI regression tests
 ```
 
 ## Screenshots

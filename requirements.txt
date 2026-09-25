@@ -3,5 +3,9 @@ pandas>=2.0
 numpy>=1.24
 yfinance>=0.2.40
 plotly>=5.18
+# scikit-learn is not imported anywhere yet -- reserved for a future,
+# optional ML-based strategy module (not part of Phases 1-9). Left here
+# rather than removed so that future phase doesn't need a dependency
+# change to get started.
 scikit-learn>=1.3
 pytest>=7.4
